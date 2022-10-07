@@ -1,0 +1,130 @@
+---
+title: "Markov Cohort Model"
+author: "DW Richardson"
+date: '2022-08-20'
+output: html_document
+---
+## Introduction
+
+Markov Cohort Models area common practice in health economics. The general notion is to follow a cohort across time periods as they transition to various stages of health which could range from having a headache or death. The states of health are arbitrary. The model relies on transition probabilities which are used in the simulation to determine the flow of cohort members among states between time periods or cycles. Markov Cohort Models also tend to utilize a costs and benefits associated with different states. This typically comes in the form of a payoff matrix in a decision model. 
+
+## Defining Base Parameters 
+
+The model here is quite generic with only three states Healthy, Sick, and Dead denoted as n_s and v_state_names. The number of cycles or time periods is n_t. While the number of individuals in this cohort is 1000. 
+
+```{r}
+#Create number of cycles
+n_t <- 40
+#States
+n_s <- 3
+#Cohort
+n_c <- 1000
+#State names
+v_state_names <- c("Healthy", "Sick", "Dead")
+```
+
+## Transistion Probability Matrix
+
+From an R perspective an actual matrix is not being setup, rather an array is, but for functional purposes we are creating a matrix of probabilities associated with either remaining in the current state or transitioning to another state with each cycle. This is setup as an array because it has three dimensions instead of two. 
+
+After creating the array full of NA's, the array is filled in by running each of the probability setting created. The first three probabilities are more like rules. In this instance we have set the rules so no one in cohort can revert to a better state. The remaining probabilities are defining the odds of transitioning for the state first cited to the second state cited in the call. Notice several of the probabilities ignore a third argument as they are applied equally across all cycles. However, transitions from Healthy to Dead include a third argument allowing for the probability of death to increase with age. The final probability being defined is leveraging R to give us the probability of remaining healthy by simply subtracting the other probabilities of transition from 100%.
+
+Note that row sums should equate to 1.0. 
+
+```{r}
+# Matrix Probabilities with transition periods
+trans_mat <- array(NA_real_,
+             dim = c(n_s, n_s, n_t),
+            dimnames = list(from = v_state_names,
+                            to = v_state_names,
+                            cycle = 1:n_t))
+
+#Rules (like dead can't go healthy)
+trans_mat[2,1, ] <- 0
+trans_mat[3,1, ] <- 0
+trans_mat[3,2, ] <- 0
+#Base transition probabilities
+trans_mat[1,2, ] <- 0.03
+trans_mat[3,3, ] <- 1
+#Vary transition probabilities
+trans_mat[1,3, 1:10] <- 0.01
+trans_mat[1,3, 11:20 ] <- 0.02
+trans_mat[1,3, 21:30] <- 0.04
+trans_mat[1,3, 31:40] <- 0.08
+
+trans_mat[2,3, ] <- trans_mat[1,3, ] + 0.04
+
+trans_mat[2, 2, ] <- 1 - trans_mat[2, 3, ]
+
+trans_mat[1,1,] <- 1 - apply(trans_mat[1, , ], 2, sum, na.rm = TRUE)
+
+head(trans_mat, 5)
+```
+
+
+## Determining State Membership
+
+Similar to the transition probability matrix this is technically setup as an array. Initially the array is filled with NA's and the initial state is defined. In this example the entire cohort is initially placed in the Healthy state. A loop is then run to replace the NA's. Each iteration of the loop is matrix multiplying our transition probability matrix by the previous cycle's state membership until completion. 
+
+```{r}
+#Create parking lot for state membership
+state_membership <- array(NA_real_, dim = c(n_t, n_s),
+                          dimnames = list(cycle = 1:n_t, state = v_state_names))
+#Create initial state
+state_membership[1, ] <- c(n_c, 0, 0)
+#State membership iteration loop
+for (i in 2:n_t) { state_membership[i, ] <- state_membership[i-1, ] %*% 
+  trans_mat[ , , i - 1]}
+
+head(state_membership, 5)
+```
+
+## Defining Payoff Matrix
+
+For our model each state in each cycle has a cost/benefit component. The cost is clear denoted as cost this can be framed as the literal health care cost of dealing with cohort members. The benefit is less clear but QALY can be thought of as a rather all-encompassing quantification of quality of life. 
+
+```{r}
+#Create payoff matrix
+payoffs <- array(NA_real_,
+                 dim = c(n_s, 2, n_t),
+                 dimnames = list(state = v_state_names,
+                                  payoff = c("Cost", "QALY"),
+                                  cycle = 1:n_t))
+payoffs[, , 1:10] <- c(10, 800, 0, 0.95, 0.65, 0)
+payoffs[, , 11:20] <- c(25, 1000, 0, 0.92, 0.60, 0)
+payoffs[, , 21:30] <- c(40, 1200, 0, 0.88, 0.55, 0)
+payoffs[, , 31:40] <- c(80, 1000, 0, 0.85, 0.50, 0)
+
+head(payoffs, 5)
+```
+
+## Determining Payoffs
+
+Again an empty array of NA's is initially setup, but then we use matrix multiplication of the payoff matrix with state membership matrix via a loop. The result is a calculation of cost and QALY for each cycle. 
+
+```{r}
+payoff_trace <- array(NA_real_,
+                      dim = c(n_t, 2),
+                      dimnames = list(cycle = 1:n_t, payoff = c("Cost", "QALY")))
+for(i in 1:n_t) {
+  payoff_trace[i, ] <- state_membership[i, ] %*% payoffs[, , i]
+}
+
+head(payoff_trace, 5)
+```
+
+## Findings 
+
+The average is calculated for both cost and QALY. These can serve as a great point of reference to see how model performs when other parameters are changed. The first plot is showing trends for state as expected the Healthy cohort decline while the Sick rises. The Death state accelerates upward before dipping. The second plot shows the payoff trace. 
+
+```{r}
+#Get Avg 
+colSums(payoff_trace)/n_c
+#Plotting for state trends
+matplot(1:n_t, state_membership, type = 'l')
+matplot(1:n_t, payoff_trace, type = 'l')
+```
+
+
+
+
