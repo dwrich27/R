@@ -1,0 +1,141 @@
+---
+title: 'Structural Vector AutoRegression Model: Inflation'
+author: "DW Richardson"
+date: '2022-08-22'
+output: html_document
+---
+
+## Introduction
+
+Structural Vector AutoRegression Models are a multivariate time-series model often used in finance and economics. Their popularity is a function of their ability to understand the relationship between variables and the shocks which they may endure (ie transmission mechanisms). The usage of SVAR models was initiated by Chris Sims in 1980 which would later win him a Nobel Prize along with Thomas Sargent in 2011 "for their empirical research on cause and effect in the macroeconomy".
+
+The model relies on endogenous variables. T
+
+Personally, I love SVAR models while they may not perform as well as simultaneous equation models with simulations they do perform well with cause and effect delineation. SVAR relies on an orthogonality restriction--which essentially means the error vector of the optimal estimator is statistically independent of any possible estimator. The simplest way to frame SVAR models is they are less concerned with the contemporaneous relationship of variables and focused on dynamic relationships between variables associated with shocks in the variables.
+
+Below is a list of several packages required to under take this example of SVAR.
+
+```{r, message = FALSE}
+library(urca)
+library(vars)
+library(mFilter)
+library(tseries)
+library(TSstudio)
+library(forecast)
+library(tidyverse)
+```
+
+## Data
+
+This SVAR example will explore an often overlooked fundamental relationship in macroeconomics. The dataset used here leverages quarterly data starting in Q1 1958 to Q2 2022 from FRED. Specifically, it looks at the output gap, inflation, and interest rates. The output gap can be characterized as the real economy's output in comparison to its potential output. When the gap is to the downside of potential output an economy would experience growth concerns. When the gap is to the upside of potential output this can be viewed as "running hot" and associated with inflation concerns. FRED calculates it as a seasonally adjusted annual percentage change in billions of chained dollars (2012) by
+
+100 x ((Real GDP - Real Potential GDP)/Real Potential GDP)
+
+Inflation is gauged here using CPI ex Food and Energy as a the percentage change from a year ago. This metric is reported monthly so to match up easier to output gap data a quarterly average is used. Interest rates are also a quarterly average of the reverse repo rate (RRP).
+
+This data was selected to investigate and perhaps tell a story. With inflation currently dominating headlines and central banker worries I wanted to focus on this. In theory inflation would be triggered when the output gap is positive indicating an economy running hot. Central banks, in this case the Fed, would then in turn looks to increase interest rates to reduce the output gap and thusly cool inflation. While examining the efficacy of this theory is a goal, so to is investigating the lags present in this potentially causal chain and the scope of responses.
+
+Note the conversion of data to time-series format. While this is needed to properly run most of the functions it also allows for use of ts_plot which gives interactive plots of the data.
+
+```{r}
+#Loading the Dataset
+macro <- read_csv("fredgraph-3.csv")
+head(macro)
+
+#Creating thee Time Series Objectives
+y <- ts(macro$`Output Gap`, start = c(1958,1,1), frequency = 4)
+pi <- ts(macro$CPI, start = c(1958,1,1), frequency = 4)
+r <- ts(macro$RRP, start = c(1958,1,1), frequency = 4)
+#Time Series Plots
+ts_plot(y, title = "Output Gap", Xtitle = "Time", Ytitle = "Output Gap")
+ts_plot(pi, title = "Inflation Rate", Xtitle = "Time", Ytitle = "Inflation Rate")
+ts_plot(r, title = "Overnight Reverse Repurchase Rate", Xtitle = "Time", Ytitle = "RRP")
+```
+
+## Setting Restrictions
+
+What is essentially a 3x3 identity matrix is created where amat can be thought of as matrix A. Since it is intuitively known the relationships in question do not operate contemporaneously we will restrict this by leaving zeroes in the upper triangle of the matrix. Likewise NA's are inputted to the bottom triangle to allow us to fill with findings from the model soon to be run.
+
+```{r}
+#Setting the Restrictions
+amat <- diag(3)
+amat[2,1] <- NA
+amat[3,1] <- NA
+amat[3,2] <- NA
+amat
+```
+
+## Lag Order Selection
+
+As with most time-series analysis lag analysis is crucial. Luckily R can tell us the best lag selection for our model. After combining our time-series data, called sv, we can use the VARselect() function from the vars package. The call here uses OLS with arguments (data, maximum lags to consider, type of deterministic regressors, inclusion of seasonal dummy variables, and inclusion of exogenous variables). Another great feature of the vars package is by calling lagselect\$selection we can get R's recommendations for lag selection based on each criteria. Here the recommendation is 5.
+
+I think this is a hugely important. Analysis is indicating the use of a lag of 5 cycles which in this case is 5 quarters or 1.25 years! This is central to understanding monetary policy and macroeconomics. Economies are not F-15 fighter jets, they are Boeing 737's. Their moves are not quick and agile instead they are slow but ultimately powerful.
+
+```{r}
+sv <- cbind(y, pi, r)
+colnames(sv) <- cbind("OutputGap", "Inflation", "RRP")
+lagselect <- VARselect(sv, lag.max = 8, type = "both")
+lagselect$selection
+lagselect$criteria
+```
+
+## Model Construction
+
+Initially a simple VAR model is constructed using the VAR() function with arguments (data, selected lags, inclusion of seasonal variables, inclusion of exogenous variables, type of deterministic regressor). This model is then used as an input using the SVAR() function with arguments (varest object from VAR(), Matrix A, Matrix B, whether hessian matrix, and estimation methods).
+
+Notice the output for SVARMod1. The restriction matrix now has the NA's filled by coefficients from the model while leaving restrictions unchanged in the upper triangle.
+
+```{r}
+Model1 <- VAR(sv, p = 5, season = NULL, exog = NULL, type = "const")
+SVARMod1 <- SVAR(Model1, Amat = amat, Bmat = NULL, hessian = TRUE, estmethod =
+                   c("scoring", "direct"))
+SVARMod1
+```
+
+## Impulse Response Functions
+
+Now we get to see how shocks or impulse in a variable effect other variables which is really what we are here for. Using the irf() function with arguments (data, impulse, response) we investigate how an increase in the impulse variable effects the response variable. These are then plotted along with confidence intervals.
+
+The first plot of a shock in output gap to output gap shows an as expected immediate increase in the output gap--redundant but intuitive and best way to iniate our example. However, notice the steady decline in the output gap in the coming quarters after the shock. This could be interpreted as the precipitous correction to equilibrium from tightening of supply conditions from the overheating economy. After about 3 years the output gap would normalize from the initial shock or impulse.
+
+The second plot looks at a shock in output gap on inflation. As expected the overproducing economy creates inflationary pressures with inflation increasing rather dramatically in the first year before moderating slightly. However, the impacts seen here are fairly long lasting. This was the most interesting finding for me personally. Unfortunately, I can not figure how to get the IRF plot to extend further on the time horizon. Nonetheless, the stickiness of inflation is quite present.
+
+The third and final IRF plot looks at the response of interest rates on an impulse from inflation. This is a very interesting and somewhat confusing result. While there is an as expected initial increase it is followed by a sharp decent before beginning its ascent. This may be capturing what I like to call the "Burns Effect". Named so after Arthur Burns the fickle Fed Chairman who was easily pressured by his political ally Nixon. Throughout the inflationary period of the 1970's Burns had quite the propensity for easing rates to support the economy for political reasons at even the slightest inkling of moderating inflation or threats to growth. In general though there is an increase in interest rates as a response to inflation shocks.
+
+```{r, warning= FALSE}
+SVARog <- irf(SVARMod1, impulse = "OutputGap", response = "OutputGap")
+SVARinf <- irf(SVARMod1, impulse = "OutputGap", response = "Inflation")
+SVARrrp <- irf(SVARMod1, impulse = "Inflation", response = "RRP")
+```
+
+```{r}
+SVARog
+plot(SVARog)
+
+SVARinf
+plot(SVARinf)
+
+SVARrrp
+plot(SVARrrp)
+```
+
+## Forecast Error Variance Decomposition
+
+Unlike other models which use predict() SVAR models rely on forecast error variance decomposition as their forecasting medium using fevd(). The forecast is not a fan chart showing the predicted path of the variable like in other models, rather it shows the expected effect of other variables on the variable being charted going out on the time horizon. For example the output gap becomes increasingly responsive to inflation especially after two quarters. This makes sense as an overproducing, running hot economy eventually runs into high prices and also higher interest rates with the top sliver increasing ever so slightly as well. Looking at the FEVD for interest rates is quite interesting as well. Inflation looks to have a quick impact on rates while the output gap effect is much slower.
+
+```{r}
+SVARfevd <- fevd(SVARMod1, n.ahead = 10)
+SVARfevd
+plot(SVARfevd)
+
+```
+
+## Findings and Comparison
+
+Everything matched intuition except the IFR for interest rates where I floated the idea of the Burns Effect. Naturally curious I reran everything but only included data from 1982 onward, four years after Burns and well into Volcker's stand on inflation. The differences were noticeable as seen below. The initial drop in rates is no longer present. Notice too it takes longer for rates to begin to increase in response to the inflation shock. Using the 1958-2022 data rates were raised after the third quarter while using the 1982 to 2022 data the rate response isn't seen until the seventh quarter. This could be due to the Fed understanding structural shifts in inflationary pressures after 1982 including globalization and technological advancements.
+
+Another interesting takeaway from this analysis was the output gap shocks effect on inflation. Using the full dataset show inflation to be rather sticky. With the impulse response remaining elevated for sometime. However, the using the subset of data post-Volcker inflation's response moderates quicker. It would be interesting to see if this behavior in inflation is more a function of changes in the aforementioned inflationary structure or an increase in central bank credibility from Volcker. Furthermore, it will be interesting to feed data from coming quarters. The reopening of the economy from the pandemic saw the output gap have its most dramatic increase on record. It should come as little surprise then inflation too spiked and rates spiked as well. The spike in rates and inflation is not really captured in the data given its quarterly formatting and only using data through Q2. It will be interesting to run this same code with more data in coming years.
+
+![](Post.Volcker.RRP.jpeg)
+
+![](PostVolckerInflation.jpeg)
