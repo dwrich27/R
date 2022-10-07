@@ -1,0 +1,165 @@
+---
+title: "Forecasting US Natural Gas Consumption"
+author: "DW Richardson"
+date: '2022-03-16'
+output: html_document
+---
+
+## Introduction
+
+Forecasting any time series can be tricky with a multitude of modeling options available and tons of options inside of these univariate models which can be tweaked to improve forecasts. Luckily R has incredible packages and functions which make the process of guessing, checking, and tweaking a little simpler and quicker.
+
+In this article we will be forecasting US natural gas consumption. Natural gas serves as a great commodity to forecast. Consumption of natural gas is highly seasonal with massive increases into the winter months as it is still the primary source of heating for areas of the US where temperatures can get below freezing regularly. The demand for natural gas is fairly inelastic with elasticity of demand estimated at -0.21 [-0.35, -0.07] in the great [piece](https://haas.berkeley.edu/wp-content/uploads/WP287.pdf) from the Energy Institute at Haas associated with Cal-Berkeley. There is a slight upward trend in natural gas consumption starting in 2010 which is likely the result of ramped up shale production in the US driving prices lower for the amply available few. Therefore much of the variance in natural gas consumption from year to year is really a function of weather driving demand. Nonetheless, we will look at using some time-series forecasts which attempt to forecast natural gas consumption based solely on past natural gas consumption.
+
+## Loading Packages and Data
+
+Thanks to the amazing Rob Hyndman the fpp2 package is leveraged which includes some stalwart packages like ggplot2, forecast, and tidyverse. The source data has been downloaded in .csv format from FRED and shows natural gas consumption in billion cubic feet (BCF) at monthly intervals unseasonally adjusted. While the fredr package could be utilized, I personally love the FRED website and just enjoy pulling directly from there.
+
+```{r}
+library(fpp2)
+library(lubridate)
+
+Y <- read.csv("NaturalGas.csv", header = TRUE)
+tail(Y)
+```
+
+## Formatting and Exploring Data
+
+In order to forecast time-series data using the methods discussed here the data will have to be converted to the time-series format. To make this step a little easier to replicate with other datasets which can have varying start and end dates the yearA and monthA are defined to give an automated reference to start arguments and yearZ and monthZ for end arguments. These can be seen inside the call of ts() along with a frequency set to 12 since data is monthly and we are only converting the second column of the data to time-series format as this is the column containing variable of interest in FRED files.
+
+The time-series plotted reveals incredible visual confirmation of seasonality with rythmical spikes in consumption. The peak to trough of a given yearly cycle looks to be in the range of 1,000 bcf with incredible consistency! Evidence of an upward trend is noticable as well but to a lower degree.
+
+```{r}
+yearA <- year(min(Y$DATE))
+monthA <- month(min(Y$DATE))
+yearZ <- year(max(Y$DATE))
+monthZ <- month(max(Y$DATE))
+
+Y.ts <- ts(Y[,2], start = c(yearA, monthA), 
+           end = c(yearZ, monthZ), 
+           frequency = 12)
+
+tail(Y.ts) 
+
+autoplot(Y.ts)+
+  ggtitle("Natural Gas Consumption")+
+  ylab("in bcf")
+```
+
+## Stationarity
+
+To properly utilize the time-series techniques featured in this article we need data which satisfies stationarity. A stationary time-series is one whose properties are not dependent upon when the outcome is observed. Put another way, variance is data over time needs to be random like white noise. However, many time-series datasets contain both seasonal and trend components which make the data non-stationary. As such the trend and seasonality components need to be controlled for to effectively model and forecast.
+
+While the original plot of of natural gas consumption clearly shows this data is non-stationary, there are some tests we can run to get a little more insight. The first is the Auto-Correlation Function (ACF) followed by the Partial Auto-Correlation Function (PACF).
+
+ACF is giving us values of auto-correlation of any series with its lagged values. Simply put, ACF shows how much the data is related with past data. The ACF run here considers all sources of auto-correlation including trend and seasonality. Notice the rhythmical pattern in the ACF plot--which is not desirably.
+
+PACF dives a little deeper. It examines auto-correlation of residuals or the data after controlling for trend and seasonality. The partial component of PACF's name is derived from examining auto-correlation as it ignores lags between past and present. Correlations here can be helpful in forecasting, but only to a certain degree as too much can create some multicollinearity concerns. Ideally the lines on the PACF graphic would all spike up and down while staying within the blue dotted lines. Note the first tick will almost always fall outside the desired range.
+
+```{r}
+acf(Y.ts)
+pacf(Y.ts)
+```
+
+## Obtaining Stationarity
+
+Luckily, two of the three methods/functions used here have the ability to control for non-stationarity built into the actual functions requiring little effort. Nonetheless, to manually get stationary data we can use diff(). While other transformations are possible like logarithmic, difference is simpler, easier to translate, and typically works well. Differencing is the process of converting the data into the literal differences between each reading. Instead of looking at the full nominal amount for each time period only the difference from the prior time period is assessed. It should be noted there is the possibility of getting a secondary differential, however, this is seldom needed.
+
+Note in the plot of the differenced data how the slight upward trend post 2010 is no longer present.
+
+```{r}
+DY <- diff(Y.ts)
+tail(DY)
+
+autoplot(DY)+
+  ggtitle("Natural Gas Consumption Differenced")+
+  ylab("in bcf")
+```
+
+## Visuallizing Seasonality
+
+While no actual manipulation of data is needed here as the R functions can handle, but it is interesting to use these two visualizations to see the seasonality of natural gas consumption after differencing.
+
+```{r}
+ggseasonplot(DY)+
+  ggtitle("Seasonal Plot")
+
+ggsubseriesplot(DY)
+```
+
+## Seasonal Naive Model
+
+This is rather basic method in this instance serves as a good baseline to compare other models to. Essentially forecasts are predicated on prior time periods from congruent seasons--meaning December forecasts are made using previious December data, not March data given the seasonality.
+
+```{r}
+fit_snaive <- snaive(DY)
+summary(fit_snaive)
+
+fcast_snaive <- forecast(fit_snaive, h = 24)
+plot(fcast_snaive, include=60, showgap = FALSE)
+```
+
+## ETS Model
+
+The ETS Model derives its name from error--trend--seasonality and is actually the forecasting framework of the exponential smoothing method. These components of the time-series fuel the forecasting ability of the method. There actually eighteen possible iteration of ETS.
+
+| Additive Error (A)   | Seasonal Component |              |                    |
+|-------------------|------------------|------------------|------------------|
+| Trend Component      | None (N)           | Additive (A) | Multiplicative (M) |
+| None (N)             | NN                 | NA           | NM                 |
+| Additive (A)         | AN                 | AA           | AM                 |
+| Additive damped (Ad) | AdN                | AdA          | AdM                |
+
+| Multiplicative Error (M) | Seasonal Component |              |                    |
+|--------------------|------------------|------------------|------------------|
+| Trend Component          | None (N)           | Additive (A) | Multiplicative (M) |
+| None (N)                 | NN                 | NA           | NM                 |
+| Additive (A)             | AN                 | AA           | AM                 |
+| Additive damped (Ad)     | AdN                | AdA          | AdM                |
+
+Fortunately, the ets() in R checks which option is best. By default tt compares the Akaike's Information Criteria (AIC) for each iteration which can be switched to Bayesian Information Criteria in ets() arguments. In this instance of modeling natural gas consumption it determined (M, N, M) was the best option.
+
+```{r}
+fit_ets <- ets(Y.ts)
+summary(fit_ets)
+
+fcast_ets <- forecast(fit_ets, h = 24)
+plot(fcast_ets, include=60, showgap = FALSE)
+summary(fcast_ets)
+```
+
+## ARIMA Model
+
+While exponential smoothing looks to harness trend and seasonality, ARIMA relies on autocorrelation in the data. ARIMA stands for autoregressive integrated moving average as it looks for both autoregressive and moving average information to potentially use.Similar to ETS modeling ARIMA comes in multiple varieties based off of the number of autoregressive terms (p), number of nonseasonal differences required for stationarity (d), and number of lagged forecast errors in the prediction equation (q). Along with this seasonal ARIMA models can have two iteration of (p, d, q) for the non-seasonal and seasonal parts of the model.
+
+The auto.ARIMA() funciton is incredible and does a lot of work for us similar to the ets() function. The function checks what is the best ARIMA model for our data as judged by AIC. In this instance ARIMA (2,0,1)(2,1,2)[12] with drift was selected.
+
+```{r}
+fit_arima <- auto.arima(Y.ts, stepwise = TRUE, approximation = FALSE,
+                        trace = TRUE)
+summary(fit_arima)
+
+fcast_arima <- forecast(fit_arima, h = 24)
+plot(fcast_arima, include=40, showgap = FALSE)
+summary(fcast_arima)
+```
+
+## Conclusions
+
+First off, I think it is important to emphasize the limitations of univariate time-series forecasting. Past performance does not indicate future performance. However, these forecasting methods can provide a reasonable range of expectations in the short term.
+
+Comparing the three methods used, ARIMA performed the best. One of the simplest ways of seeing this is looking at the standard deviations of each model.
+
+| Model  | Standard Deviation |
+|:------:|:------------------:|
+| ARIMA  |     102.18 bcf     |
+|  ETS   |     144.22 bcf     |
+| SNaive |     152.99 bcf     |
+
+Visually we can look at the ACF from each model's forecast. Notice how ARIMA fits best inside of the blue dotted lines. The spread of the residuals in the final histogram of each also shows ARIMA with the tightest spread and highest centrality.
+
+```{r}
+checkresiduals(fit_arima)
+checkresiduals(fit_ets)
+checkresiduals(fit_snaive)
+```
