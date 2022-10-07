@@ -1,0 +1,178 @@
+---
+title: "Synthetic Difference-in-Differences: Prop 99"
+author: "DW Richardson"
+date: '2022-08-12'
+output: html_document
+---
+
+## Introduction
+
+This project is a synopsis of a [replication paper](https://drive.google.com/file/d/1HJVSNipq9bsixXKwmU265xUb_2r78Jm1/view?usp=sharing) written while I was in grad school on the newest causal method developed by recent Nobel Prize winner Guido Imbens, Susan Athey, et al. Their paper can be found [here](https://www.nber.org/system/files/working_papers/w25532/w25532.pdf) and Athey gives a wonderful [presentation](https://www.youtube.com/watch?v=r2DzGAigTl4) breaking down the new method which looks to increase robustness by combining components from Difference-in-Differences and Synthetic Control methodologies.
+
+The dataset used is regarding California's Proposition 99 which includes cigarette consumption data on 38 states from 1970 to 2000. Prop 99 instituted a tax on cigarettes sales in 1989 in efforts to decrease cigarette consumption. While intuition supports the notion this worked proving causation requires more and with lack of a true counterfactual we must rely on experimental designs and mathematics to create counterfactuals.
+
+To evaluate the efficacy of Prop 99, three different, yet related, causal methods will be used and compared for robustness.
+
+-   Difference-in-Differences (DiD)
+
+    ![](Desktop/Screen%20Shot%202022-09-12%20at%202.44.27%20PM.png)
+
+-   Synthetic Control (SC)
+
+    ![](Desktop/Screen%20Shot%202022-09-12%20at%202.42.16%20PM.png)
+
+-   Synthetic Difference-in-Differences (SDiD)
+
+![](Desktop/Screen%20Shot%202022-09-12%20at%202.42.25%20PM.png)
+
+```{r}
+devtools::install_github("synth-inference/synthdid")
+library(synthdid)
+library(rngtools)
+library(future)
+library(doFuture)
+library(future.batchtools)
+library(xtable)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+```
+
+## Define Estimators
+
+The initial step is just to simply setup a list of estimators for the three causal methods being evaluated. Here these are each set to the corresponding function in the synthdid package which delineates between each methodology. The second half of this publication goes into more or the nuances between estimate methods.
+
+```{r}
+estimators = list(did=did_estimate,
+                  sc=sc_estimate,
+                  sdid=synthdid_estimate)
+str(synthdid_estimate)
+str(sc_estimate)
+str(did_estimate)
+```
+
+## Data
+
+One of the beauties of Prop 99 data is it requires minimal processing and widely available. As seen below this is panel data and is organized by year for each state with cigarette packs per capita as the variable of interest. A column denoting treatment is also present with dummy variables, but only California is in the treatment group. Panel data typically includes:
+
+-   Units (n) -\> states
+
+-   Time periods (t) -\> years
+
+-   Outcomes (Y) -\> packs per capita
+
+-   Treatment Indicators -\> binary dummy variable
+
+```{r}
+data('california_prop99')
+head(california_prop99)
+```
+
+## Enter the Matrix
+
+Here we are simply converting the data from panel data into matrices which is required by sythdid. Synthdid has a useful function panel.matrices() which we used here. Notice the difference on the call of head() from the previous step. We end up with four matrices:
+
+-   \$Y is a 38 x 31 matrix of with outcome data organized in the 38 rows from states and 31 columns for years
+
+-   \$N0 is simply the number of units or states
+
+-   \$T0 is the number time periods, years, during the pre-treatment era which in this case if before 1989.
+
+-   \$W is our counterfactual group or control group eligible units signified by all 0's for treatment and the lack of California
+
+```{r}
+setup = panel.matrices(california_prop99)
+head(setup)
+```
+
+## Estimates
+
+The function estimator() uses Bayesian techniques to estimate each known datapoint using the others as datapoints. Calling estimator() along with the three methods from estimators on the newly created matrices provides us with the estimates for all three methods.
+
+```{r}
+estimates = lapply(estimators, function(estimator) { estimator(setup$Y,
+                                                               setup$N0, setup$T0) } )
+
+head(estimates)
+```
+
+## Standard Errors
+
+With estimates in hand for all three methods standard errors are calculated. The if/else portion can basically be ignored as the actual replication also compared the matrix completion causal method--as such the else portion was used to get standard errors. The bulk of the lifting here is done by the vcov() function which is a quick way of getting the covariance matrix. Note the use of "placebo" as the method with other options in the synthdid package being "bootstrap" and "jackknife".
+
+```{r}
+standard.errors = mapply(function(estimate, name) {
+  set.seed(12345)
+  if(name == 'mc') { mc_placebo_se(setup$Y, setup$N0, setup$T0) }
+  else {             sqrt(vcov(estimate, method='placebo'))     }
+}, estimates, names(estimators))
+
+head(standard.errors)
+```
+
+## Creating Output Table
+
+Standard errors and estimates for each of the three methods are merged into a table via rbind() after being unlisted. Row and column names are also defined with results rounded to one decimal place.
+
+Comparative analysis of standard errors bares stronger evidence in favor of SDiD or SC over DiD. Proportionally, DiD's standard error is 65% of the estimator while SDiD's is 54%. SDiD is a more flexible method and as such should have relatively higher variance and standard errors in comparison to the less flexible DiD method. However, as Table 1 shows the standard error for SDiD is both nominally and proportionally smaller than that of DiD. The outperformance of SDiD and SC over DiD can be attributed to the use of weighting which offered a more localized approach by emphasizing control units more similar pre-treatment to treatment units.
+
+```{r}
+california.table = rbind(unlist(estimates), unlist(standard.errors))
+rownames(california.table) = c('estimate', 'standard error')
+colnames(california.table) = toupper(names(estimators))
+round(california.table, digits=1)
+```
+
+## Figure 1
+
+By utilizing the the synthdid_plot function from synthdid package were are able to get a tremendous glimpse into both the effects of Prop 99 and the nuances between these three methods. More information on the arguments involved with synthdid_plot can be found here.
+
+### DiD Plot
+
+The first plot is the DiD plot. The addition of the pre-treatment dashed trend line for California is a great way of visualizing the parallel trends assumption key to DiD. The general idea with this assumption is to fit trendlines between the treatment unit and the control groups based on pre-treatment data. As the highlighted red area at the bottom of the first facet shows the entire pre-treatment period was weighted equally in determining the trends. The causal estimate of-27.3 can be seen as the difference in the slope of the dashed parallel assumption line and the actual California outcome post-treatment in 1989.
+
+### SC Plot
+
+The middle plot of SC methodology does not include dashed trend lines. This is because SC does not rely on the parallel trends assumption. Instead a synthetic control unit is built by weighting a group of states such that their pre-treatment trend shares a strong similarity with treatment unit. However, the synthetic control unit does not receive treatment and continues on serving as a counterfactual. The divergence in slope of California and the synthetic control shows the estimate of -19.6.
+
+### SDiD Plot
+
+In the final facet we see SDiD in action. Like its parent DiD, SDiD uses the parallel trends assumption. But as seen in the DiD plot the actual data pre-treatment between California and other states is far from parallel. We can force trend lines on the DiD to satisfy the assumption but clearly the two are not parallel. To remedy this and better satisfy the parallel trends assumption the idea of a synthetic control is applied. By creating a control unit based on the most applicable states like the SC method does we are able to create a control unit where the actual outcomes line pre-treatment is far more parallel than that of the DiD plot. Also worth noting is the difference in the weighting of time periods as well between DiD and SDiD. SDiD gives much more of the weight in the immediate years leading up to Prop 99 going into effect in 1989.
+
+```{r}
+synthdid_plot(estimates[1:3], facet.vertical=FALSE,
+              control.name='control', treated.name='california',
+              lambda.comparable=TRUE, se.method = 'none',
+              trajectory.linetype = 1, line.width=.75, effect.curvature=-.4,
+              trajectory.alpha=.7, effect.alpha=.7,
+              diagram.alpha=1, onset.alpha=.7) +
+  theme(legend.position=c(.26,.07), legend.direction='horizontal',
+        legend.key=element_blank(), legend.background=element_blank(),
+        strip.background=element_blank(), strip.text.x = element_blank())
+```
+
+## Figure 2
+
+Figure 2 does not tell us much about the effects of Prop 99, but it does tell us a lot about the performance of these three methods. This plots are in the same order as Figure 1 (DiD, SC, SDiD). Understanding this visualization can best be done by trying to answer these questions:
+
+-   Which plot has the most uniform dot sizes?
+
+-   Which plot has the least amount of dots far away from the dark horizontal line which represents the estimate for each?
+
+-   Which plot offers the best combination of the prior two questions?
+
+Clearly, the final plot, SDiD offers by far the best combination of uniform dot sizes while falling close to the estimate line. Each of these dots represent non-treatment states which were used to create the control unit. The DiD plot has a nice even weighting on each state but suffers from outliers like Nebraska and Montana falling very far from the estimate with several other moderately far. The SC plot actually does a little bit better as the heavily weighted states contributing to its control unit fall close to the estimate line with a few weaker contributors as outliers. SDiD on the other hand has a much neater, tighter fit of its control unit contributors to the estimate line.
+
+```{r}
+synthdid_units_plot(rev(estimates[1:3]), se.method='none') +
+  theme(legend.background=element_blank(), legend.title = element_blank(),
+        legend.direction='horizontal', legend.position=c(.17,.07),
+        strip.background=element_blank(), strip.text.x = element_blank())
+```
+
+## Conclusions
+
+My paper only went as far to outline SDiD and the methods from which it draws inspiration and replicates analysis on California Proposition 99 from Synthetic Difference-in-Differences. As such it can not properly assert SDiD domination over DiD or to a lesser degree SC. The results of this paper certainly do lend credence to the idea SDiD may be an incredible addition to the tool bag of anyone looking to use applied microeconomics and could be superior a causal estimation method when using panel data in social sciences.
+
+Deeper analysis is presented for the superiority of SDiD in the actual paper which were beyond the scope of my paper or its author's computational abilities. The authors ran placebo simulations to further prove SDiD's dominance. Using data from the Current Population Survey a placebo simulation was run gauging DiD and SC against SDiD. SDiD outperformed its recent ancestors with a root-mean-square deviation of 0.28 compared to 0.37 for SC and 0.49 for DiD. SDiD also registered lower bias readings at 0.10 as opposed to 0.20 for SC and 0.21 for DiD. A second simulation was run based off of the Penn World Table dataset. Its findings concur our findings with Prop 99 with SDiD outperforming SC marginally as measured by root-mean-sqaure- deviation and bias while significantly outperforming DiD.
