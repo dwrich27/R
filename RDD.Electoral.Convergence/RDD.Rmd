@@ -1,0 +1,214 @@
+---
+title: 'Regression Discontinuity: Electoral Convergence Theory'
+author: "DW Richardson"
+date: '2021-12-27'
+output: html_document
+---
+
+## Introduction
+
+Regression Discontinuity Design (RDD) has been exploding on the causal inference scene. Despite being around for decades it wasn't until the early 2000's RDD use would proliferate. As seen by the chart above the use of RDD in published studies went exponential after 1999--and not surprisingly Angrist played a role. The main reason for RDD's popularity is its powerful ability to handle selection bias.
+
+RDD is utilized in situations where a cutoff or threshold allows for delineation of treatment and control. Fortunately, society has lots of arbitrary thresholds such as GPA or test scores for school admission, cutoffs for blood alcohol levels, or body mass index in determining medical treatment for COVID.
+
+The main underpinning of RDD is the continuity assumption. To satisfy expected values are required to show a continuous trend. Below we are simulating the data and then creating a threshold at 50 to visualize data on either side of this threshold. As shown in the resulting plot the trend is continuous ABSENT treatment. Through out this example Y can be thought of as a peak salary for a student during their career and X can be viewed as an important test score. This assumption allows for the data just above and just below the cutoff to be as good as randomized.
+
+This will utilize several packages many of which may need to be installed.
+
+```{r}
+library(tidyverse)
+library(haven)
+library(estimatr)
+library(stats)
+library(rdrobust)
+library(rddensity)
+library(rdd)
+```
+
+## Data and Framing the Question
+
+This will look to replicate an examination of political economy by Lee, Moretti, and Butler in their 2004 piece "Do Voters Affect or Elect Policies? Evidence from the U.S. House". This research looked to address a major question about the role of elections in candidate legislative voting behavior. Does competition for votes in an election drive candidates towards the center driving policy compromises (Convergence Theory)? Or are voters simply electing policies and the election is the process by which a policy option is chosen (Divergence Theory)?
+
+Their findings support the latter. To examine this they analyzed data from US House races from 1946 to 1995. Using this data they attempt to estimate the effect of a democratic candidate's electoral strength on subsequent roll-call voting records as measured by scores from the Americans for Democratic Action organization. Simply put if candidates perform well in an election how does that affect their legislative votes.
+
+Selection bias creates serious hurdles to this analysis. The winners of the seat are endogenously determined by things voter demographics, candidate quality, and candidate resources. Enter RDD. By focusing in on a subset of elections around the threshold of winning, 50% of the vote, the variation in electoral strength can be seen as exogenous. Selection bias is circumvented as around the cutoff selection is as good as random. Around the margin of 50% is where voter preferences are most similar.
+
+Choosing the range for this subset of data is important. Here the subset is defined as between 48% and 52%.
+
+```{r}
+read_data <- function(df)
+{
+  full_path <- paste("https://raw.github.com/scunning1975/mixtape/master/", 
+                     df, sep = "")
+  df <- read_dta(full_path)
+  return(df)
+}
+
+lmb_data <- read_data("lmb-data.dta")
+
+lmb_subset <- lmb_data %>% 
+  filter(lagdemvoteshare>.48 & lagdemvoteshare<.52)
+```
+
+## Comparing Local and Global Regressions
+
+While the code below for each is pretty similar, notice the difference in the data used. The local regressions use the subset +/- 0.50 while the global regressions use the entire dataset.
+
+```{r}
+local_lm_1 <- lm_robust(score ~ lagdemocrat, data = lmb_subset, clusters = id)
+local_lm_2 <- lm_robust(score ~ democrat, data = lmb_subset, clusters = id)
+local_lm_3 <- lm_robust(democrat ~ lagdemocrat, data = lmb_subset, clusters = id)
+
+summary(local_lm_1)
+summary(local_lm_2)
+summary(local_lm_3)
+
+global_lm_1 <- lm_robust(score ~ lagdemocrat, data = lmb_data, clusters = id)
+global_lm_2 <- lm_robust(score ~ democrat, data = lmb_data, clusters = id)
+global_lm_3 <- lm_robust(democrat ~ lagdemocrat, data = lmb_data, clusters = id)
+
+summary(global_lm_1)
+summary(global_lm_2)
+summary(global_lm_3)
+
+```
+
+```{r}
+#using all data (note data used is lmb_data, not lmb_subset)
+
+lm_1 <- lm_robust(score ~ lagdemocrat, data = lmb_data, clusters = id)
+lm_2 <- lm_robust(score ~ democrat, data = lmb_data, clusters = id)
+lm_3 <- lm_robust(democrat ~ lagdemocrat, data = lmb_data, clusters = id)
+
+summary(lm_1)
+summary(lm_2)
+summary(lm_3)
+```
+
+```{r}
+lmb_data <- lmb_data %>% 
+  mutate(demvoteshare_c = demvoteshare - 0.5)
+
+lm_1 <- lm_robust(score ~ lagdemocrat + demvoteshare_c, data = lmb_data, clusters = id)
+lm_2 <- lm_robust(score ~ democrat + demvoteshare_c, data = lmb_data, clusters = id)
+lm_3 <- lm_robust(democrat ~ lagdemocrat + demvoteshare_c, data = lmb_data, clusters = id)
+
+summary(lm_1)
+summary(lm_2)
+summary(lm_3)
+
+```
+
+```{r}
+lm_1 <- lm_robust(score ~ lagdemocrat*demvoteshare_c, 
+                  data = lmb_data, clusters = id)
+lm_2 <- lm_robust(score ~ democrat*demvoteshare_c, 
+                  data = lmb_data, clusters = id)
+lm_3 <- lm_robust(democrat ~ lagdemocrat*demvoteshare_c, 
+                  data = lmb_data, clusters = id)
+
+summary(lm_1)
+summary(lm_2)
+summary(lm_3)
+```
+
+```{r}
+lmb_data <- lmb_data %>% 
+  mutate(demvoteshare_sq = demvoteshare_c^2)
+
+lm_1 <- lm_robust(score ~ lagdemocrat*demvoteshare_c + lagdemocrat*demvoteshare_sq, 
+                  data = lmb_data, clusters = id)
+lm_2 <- lm_robust(score ~ democrat*demvoteshare_c + democrat*demvoteshare_sq, 
+                  data = lmb_data, clusters = id)
+lm_3 <- lm_robust(democrat ~ lagdemocrat*demvoteshare_c + lagdemocrat*demvoteshare_sq, 
+                  data = lmb_data, clusters = id)
+
+summary(lm_1)
+summary(lm_2)
+summary(lm_3)
+```
+
+```{r}
+lmb_data <- lmb_data %>% 
+  filter(demvoteshare > .45 & demvoteshare < .55) %>%
+  mutate(demvoteshare_sq = demvoteshare_c^2)
+
+lm_1 <- lm_robust(score ~ lagdemocrat*demvoteshare_c + lagdemocrat*demvoteshare_sq, 
+                  data = lmb_data, clusters = id)
+lm_2 <- lm_robust(score ~ democrat*demvoteshare_c + democrat*demvoteshare_sq, 
+                  data = lmb_data, clusters = id)
+lm_3 <- lm_robust(democrat ~ lagdemocrat*demvoteshare_c + lagdemocrat*demvoteshare_sq, 
+                  data = lmb_data, clusters = id)
+
+summary(lm_1)
+summary(lm_2)
+summary(lm_3)
+```
+
+```{r}
+#aggregating the data
+categories <- lmb_data$lagdemvoteshare
+
+demmeans <- split(lmb_data$score, cut(lmb_data$lagdemvoteshare, 100)) %>% 
+  lapply(mean) %>% 
+  unlist()
+
+agg_lmb_data <- data.frame(score = demmeans, lagdemvoteshare = seq(0.01,1, by = 0.01))
+
+#plotting
+lmb_data <- lmb_data %>% 
+  mutate(gg_group = case_when(lagdemvoteshare > 0.5 ~ 1, TRUE ~ 0))
+         
+ggplot(lmb_data, aes(lagdemvoteshare, score)) +
+  geom_point(aes(x = lagdemvoteshare, y = score), data = agg_lmb_data) +
+  stat_smooth(aes(lagdemvoteshare, score, group = gg_group), method = "lm", 
+              formula = y ~ x + I(x^2)) +
+  xlim(0,1) + ylim(0,100) +
+  geom_vline(xintercept = 0.5)
+
+ggplot(lmb_data, aes(lagdemvoteshare, score)) +
+  geom_point(aes(x = lagdemvoteshare, y = score), data = agg_lmb_data) +
+  stat_smooth(aes(lagdemvoteshare, score, group = gg_group), method = "loess") +
+  xlim(0,1) + ylim(0,100) +
+  geom_vline(xintercept = 0.5)
+
+ggplot(lmb_data, aes(lagdemvoteshare, score)) +
+  geom_point(aes(x = lagdemvoteshare, y = score), data = agg_lmb_data) +
+  stat_smooth(aes(lagdemvoteshare, score, group = gg_group), method = "lm") +
+  xlim(0,1) + ylim(0,100) +
+  geom_vline(xintercept = 0.5)
+```
+
+```{r}
+smooth_dem0 <- lmb_data %>% 
+  filter(democrat == 0) %>% 
+  select(score, demvoteshare)
+smooth_dem0 <- as_tibble(ksmooth(smooth_dem0$demvoteshare, smooth_dem0$score, 
+                                 kernel = "box", bandwidth = 0.1))
+
+
+smooth_dem1 <- lmb_data %>% 
+  filter(democrat == 1) %>% 
+  select(score, demvoteshare) %>% 
+  na.omit()
+smooth_dem1 <- as_tibble(ksmooth(smooth_dem1$demvoteshare, smooth_dem1$score, 
+                                 kernel = "box", bandwidth = 0.1))
+
+ggplot() + 
+  geom_smooth(aes(x, y), data = smooth_dem0) +
+  geom_smooth(aes(x, y), data = smooth_dem1) +
+  geom_vline(xintercept = 0.5)
+```
+
+```{r}
+rdr <- rdrobust(y = lmb_data$score,
+                x = lmb_data$demvoteshare, c = 0.5)
+summary(rdr)
+```
+
+```{r}
+DCdensity(lmb_data$demvoteshare, cutpoint = 0.5)
+
+density <- rddensity(lmb_data$demvoteshare, c = 0.5)
+rdplotdensity(density, lmb_data$demvoteshare)
+```
